@@ -1,0 +1,41 @@
+# Output CSV path
+$outputPath = "$env:USERPROFILE\Desktop\WiFi_Profiles.csv"
+
+# Initialize an array to store Wi-Fi data
+$wifiProfiles = @()
+
+# Get all saved Wi-Fi profile names
+$profiles = netsh wlan show profiles | Select-String "All User Profile" | ForEach-Object {
+    ($_ -split ":")[1].Trim()
+}
+
+# Loop through each profile and extract the key (password) if available
+foreach ($profile in $profiles) {
+    $details = netsh wlan show profile name="$profile" key=clear
+
+    $ssid = $profile
+    $auth = ($details | Select-String "Authentication" | Select-Object -First 1).ToString().Split(":")[1].Trim()
+    $encryption = ($details | Select-String "Cipher" | Select-Object -First 1).ToString().Split(":")[1].Trim()
+    $securityKey = ($details | Select-String "Security key" | Select-Object -First 1).ToString().Split(":")[1].Trim()
+    $password = ($details | Select-String "Key Content" | Select-Object -First 1)
+
+    if ($password) {
+        $password = $password.ToString().Split(":")[1].Trim()
+    } else {
+        $password = ""
+    }
+
+    # Add to array
+    $wifiProfiles += [PSCustomObject]@{
+        SSID         = $ssid
+        Authentication = $auth
+        Encryption   = $encryption
+        SecurityKey  = $securityKey
+        Password     = $password
+    }
+}
+
+# Export to CSV
+$wifiProfiles | Export-Csv -Path $outputPath -NoTypeInformation -Encoding UTF8
+
+Write-Host "Wi-Fi profiles exported to: $outputPath"
