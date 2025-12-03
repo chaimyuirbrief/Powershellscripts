@@ -1,0 +1,11 @@
+# This script must be run as Administrator
+
+# Set owner to Everyone for the folder and subitems
+$folderPath = "C:\Program Files (x86)\Microsoft"
+icacls "$folderPath" /setowner "Everyone" /T /C /Q
+
+# Kill any processes related to Edge
+Get-Process | Where-Object { $_.Name -like "*edge*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+
+# Delete the folder
+Remove-Item -Path "$folderPath" -Recurse -Force -ErrorAction SilentlyContinue
