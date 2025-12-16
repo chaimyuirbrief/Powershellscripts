@@ -1,0 +1,83 @@
+param(
+    [Parameter(Mandatory=$false)]
+    [ValidatePattern("^[A-Za-z]:$")]
+    [string]$DriveLetter = "C:",
+
+    [Parameter(Mandatory=$false)]
+    [ValidateRange(1,300)]
+    [int]$IntervalSeconds = 10
+)
+
+function Get-BDEInfo {
+    try {
+        $v = Get-BitLockerVolume -MountPoint $DriveLetter -ErrorAction Stop
+        [pscustomobject]@{
+            Status            = $v.VolumeStatus
+            PercentEncrypted  = [int]$v.EncryptionPercentage
+            Method            = $v.EncryptionMethod
+            Protection        = $v.ProtectionStatus
+            LockStatus        = $v.LockStatus
+        }
+    } catch {
+        $out = & manage-bde -status $DriveLetter 2>$null
+        $percentLine = $out | Where-Object { $_ -match 'Percentage Encrypted\s*:\s*(\d+(\.\d+)?)%' }
+        $statusLine  = $out | Where-Object { $_ -match 'Conversion Status\s*:\s*(.+)$' }
+        $pct = if ($percentLine) { [int]([double]($percentLine -replace '.*:\s*','' -replace '%','')) } else { 0 }
+        $stat = if ($statusLine) { ($statusLine -replace '.*:\s*','').Trim() } else { 'Unknown' }
+
+        [pscustomobject]@{
+            Status            = $stat
+            PercentEncrypted  = $pct
+            Method            = ($out | Where-Object { $_ -match 'Encryption Method' }) -replace '.*:\s*',''
+            Protection        = ($out | Where-Object { $_ -match 'Protection Status' }) -replace '.*:\s*',''
+            LockStatus        = ($out | Where-Object { $_ -match 'Lock Status' }) -replace '.*:\s*',''
+        }
+    }
+}
+
+$host.UI.RawUI.WindowTitle = "BitLocker Decryption Monitor [$DriveLetter]"
+Write-Host "Monitoring BitLocker decryption on $DriveLetter (updates every $IntervalSeconds sec). Press Ctrl+C to stop." -ForegroundColor Cyan
+
+$prev = Get-BDEInfo
+$prevTime = Get-Date
+
+while ($true) {
+    $info = Get-BDEInfo
+    $now  = Get-Date
+
+    $decrypted = [math]::Max(0, 100 - $info.PercentEncrypted)
+    $progressText = "{0} | {1}% encrypted ({2}% decrypted) | Method: {3} | Protection: {4} | Lock: {5}" -f `
+        $info.Status, $info.PercentEncrypted, $decrypted, $info.Method, $info.Protection, $info.LockStatus
+
+    # ETA calculation
+    $etaText = ""
+    $deltaPct = $prev.PercentEncrypted - $info.PercentEncrypted
+    $deltaSec = ($now - $prevTime).TotalSeconds
+    if ($deltaPct -gt 0 -and $deltaSec -gt 0) {
+        $pctPerHour = ($deltaPct / $deltaSec) * 3600
+        $remainingPct = $info.PercentEncrypted
+        if ($pctPerHour -gt 0) {
+            $hrs = $remainingPct / $pctPerHour
+            $eta = [TimeSpan]::FromHours($hrs)
+            $etaText = " | ~ETA: {0:hh}h {0:mm}m {0:ss}s (≈{1:N1}%/hr)" -f $eta, $pctPerHour
+        }
+    } elseif ($deltaPct -eq 0) {
+        $etaText = " | (paused or no change)"
+    }
+
+    Write-Progress -Activity "BitLocker decrypting $DriveLetter" `
+                   -Status ($progressText + $etaText) `
+                   -PercentComplete $decrypted
+
+    Write-Host ("[{0}] {1}" -f (Get-Date).ToString("HH:mm:ss"), $progressText + $etaText)
+
+    if ($info.Status -match 'FullyDecrypted' -or $info.PercentEncrypted -le 0) {
+        Write-Progress -Activity "BitLocker decrypting $DriveLetter" -Completed
+        Write-Host "✅ $DriveLetter is fully decrypted." -ForegroundColor Green
+        break
+    }
+
+    $prev = $info
+    $prevTime = $now
+    Start-Sleep -Seconds $IntervalSeconds
+}
