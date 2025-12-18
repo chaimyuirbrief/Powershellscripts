@@ -1,0 +1,1 @@
+Run in powershell or download the ps1
