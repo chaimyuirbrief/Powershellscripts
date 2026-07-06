@@ -29,10 +29,13 @@ foreach($p in $procNames){
 }
 
 # 2) Stop/delete services that look like SupportAssist / PC-Doctor
+# NOTE: -or must sit at the END of each line. If it starts the next line,
+# PowerShell ends the statement after the first -match and tries to run "-or"
+# as a command, so the filter would only ever match on $_.Name.
 $svcLike = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object {
-  $_.Name -match '(?i)(supportassist|pc-?doctor|pcdr|pcdsrvc|techhub)'
-    -or $_.DisplayName -match '(?i)(supportassist|pc-?doctor|pcdr|techhub)'
-    -or $_.PathName -match '(?i)(supportassistagent|pcdr|pc-?doctor)'
+  $_.Name -match '(?i)(supportassist|pc-?doctor|pcdr|pcdsrvc|techhub)' -or
+  $_.DisplayName -match '(?i)(supportassist|pc-?doctor|pcdr|techhub)' -or
+  $_.PathName -match '(?i)(supportassistagent|pcdr|pc-?doctor)'
 }
 
 if($svcLike){
@@ -80,7 +83,8 @@ foreach($f in $folders){
     "Removing folder: $f" | Tee-Object -FilePath $log -Append
     try{
       takeown /f "$f" /r /d y | Out-Null
-      icacls "$f" /grant Administrators:F /t /c | Out-Null
+      # *S-1-5-32-544 is the built-in Administrators SID - resolves on any locale
+      icacls "$f" /grant '*S-1-5-32-544:F' /t /c | Out-Null
       # remove any .pkms/.sys first (sometimes locked)
       Get-ChildItem -Path $f -Recurse -Force -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -match '(?i)\.(pkms|sys|dll|exe)$' } |

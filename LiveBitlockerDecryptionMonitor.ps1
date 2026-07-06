@@ -59,7 +59,10 @@ while ($true) {
         if ($pctPerHour -gt 0) {
             $hrs = $remainingPct / $pctPerHour
             $eta = [TimeSpan]::FromHours($hrs)
-            $etaText = " | ~ETA: {0:hh}h {0:mm}m {0:ss}s (≈{1:N1}%/hr)" -f $eta, $pctPerHour
+            # {0:hh} caps at 23h and silently drops days, so build the string
+            # from total hours to stay correct for jobs longer than a day.
+            $etaText = " | ~ETA: {0}h {1:mm}m {1:ss}s (≈{2:N1}%/hr)" -f `
+                [math]::Floor($eta.TotalHours), $eta, $pctPerHour
         }
     } elseif ($deltaPct -eq 0) {
         $etaText = " | (paused or no change)"
@@ -71,7 +74,8 @@ while ($true) {
 
     Write-Host ("[{0}] {1}" -f (Get-Date).ToString("HH:mm:ss"), $progressText + $etaText)
 
-    if ($info.Status -match 'FullyDecrypted' -or $info.PercentEncrypted -le 0) {
+    # Get-BitLockerVolume reports "FullyDecrypted"; manage-bde reports "Fully Decrypted"
+    if ($info.Status -match 'Fully\s*Decrypted' -or $info.PercentEncrypted -le 0) {
         Write-Progress -Activity "BitLocker decrypting $DriveLetter" -Completed
         Write-Host "✅ $DriveLetter is fully decrypted." -ForegroundColor Green
         break
