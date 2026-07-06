@@ -18,7 +18,10 @@ param(
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir | Out-Null
 }
-$logFile = Join-Path $LogDir "$Target ping logs.txt"
+# Sanitize the target for the filename: IPv6 literals contain ':', which is not
+# a legal NTFS filename character and would make Add-Content fail silently.
+$safeTarget = ($Target -replace '[\\/:*?"<>|]', '_')
+$logFile = Join-Path $LogDir "$safeTarget ping logs.txt"
 
 Write-Host "Pinging $Target every $IntervalSeconds second(s). Logging to $logFile - Ctrl+C to stop." -ForegroundColor Cyan
 

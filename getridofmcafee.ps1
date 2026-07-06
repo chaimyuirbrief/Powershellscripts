@@ -89,6 +89,42 @@ function Test-PathStartsWith {
     return $false
 }
 
+function Test-IsReparsePoint {
+    param([string]$Path)
+    try {
+        $attr = [System.IO.File]::GetAttributes($Path)
+        return (($attr -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+    } catch { return $false }
+}
+
+function Remove-LinkOnly {
+    # Delete a junction/symlink WITHOUT following it into its target.
+    param([string]$Path)
+    if (Test-Path -LiteralPath $Path -PathType Container) {
+        # rd without /s unlinks a junction/dir-symlink; it never touches the target
+        cmd.exe /d /c "rd /q `"$Path`"" 2>&1 | Out-Null
+        if (Test-Path -LiteralPath $Path) {
+            try { [System.IO.Directory]::Delete($Path, $false) } catch { }
+        }
+    } else {
+        try { [System.IO.File]::Delete($Path) } catch { }
+    }
+}
+
+function Remove-NestedReparsePoints {
+    # Unlink every junction/symlink inside a tree AS A LINK, without descending
+    # through it. Must run before any recursive takeown/icacls/delete so those
+    # operations can never traverse a reparse point into unrelated data.
+    param([string]$Dir)
+    foreach ($child in @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue)) {
+        if (Test-IsReparsePoint $child.FullName) {
+            Remove-LinkOnly $child.FullName
+        } elseif ($child.PSIsContainer) {
+            Remove-NestedReparsePoints -Dir $child.FullName
+        }
+    }
+}
+
 function Remove-ItemForcefully {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -111,20 +147,39 @@ function Remove-ItemForcefully {
         return
     }
 
+    # If the target itself is a junction/symlink, unlink it only - never follow
+    # it into (and delete) whatever it points at.
+    if (Test-IsReparsePoint $full) {
+        Remove-LinkOnly $full
+        if (-not (Test-Path -LiteralPath $full)) { Write-Ok "Removed link (target untouched): $full" }
+        else { $script:Resistant.Add($full); Write-Bad "Could not remove link: $full" }
+        return
+    }
+
+    $isDir = Test-Path -LiteralPath $full -PathType Container
+
+    # Strip any nested junctions/symlinks as links first, so the recursive
+    # takeown /R, icacls /T and Remove-Item -Recurse below cannot traverse a
+    # reparse point into unrelated data (Remove-Item follows them on PS 5.1).
+    if ($isDir) { Remove-NestedReparsePoints -Dir $full }
+
     # 1) plain delete
     Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
     if (-not (Test-Path -LiteralPath $full)) { Write-Ok "Removed: $full"; return }
 
     # 2) take ownership and grant access, then retry.
-    #    *S-1-1-0 is the Everyone SID - works on non-English Windows where
-    #    the literal group name "Everyone" does not exist.
-    $isDir = Test-Path -LiteralPath $full -PathType Container
+    #    Grant Administrators (*S-1-5-32-544) + SYSTEM (*S-1-5-18), by SID so it
+    #    works on non-English Windows. NOT Everyone (*S-1-1-0): if a file later
+    #    survives (locked), an Everyone:F ACE would linger as a world-writable
+    #    privilege-escalation surface. takeown /A already sets the owner to
+    #    Administrators, so Administrators:F is enough for the elevated process
+    #    to delete the tree.
     if ($isDir) {
         takeown.exe /F "$full" /R /A /D Y 2>&1 | Out-Null
-        icacls.exe "$full" /grant '*S-1-1-0:(OI)(CI)F' /T /C /Q 2>&1 | Out-Null
+        icacls.exe "$full" /grant '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' /T /C /Q 2>&1 | Out-Null
     } else {
         takeown.exe /F "$full" /A 2>&1 | Out-Null
-        icacls.exe "$full" /grant '*S-1-1-0:F' /C /Q 2>&1 | Out-Null
+        icacls.exe "$full" /grant '*S-1-5-32-544:F' '*S-1-5-18:F' /C /Q 2>&1 | Out-Null
     }
     Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
     if (-not (Test-Path -LiteralPath $full)) { Write-Ok "Removed after taking ownership: $full"; return }
@@ -151,6 +206,9 @@ function Remove-ItemForcefully {
         $script:RebootNeeded = $true
         Write-Bad "Locked - $queued item(s) queued for deletion at next reboot: $full"
     } else {
+        # Could not delete and could not queue: restore inherited ACLs so the
+        # explicit ACE we granted above does not linger on a surviving item.
+        icacls.exe "$full" /reset /T /C /Q 2>&1 | Out-Null
         $script:Resistant.Add($full)
         Write-Bad "Still resistant: $full"
     }
@@ -209,7 +267,11 @@ if (-not $SkipUninstallers -and $products.Count -gt 0) {
             $proc = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/d /s /c "' + $cmd + '"') `
                                   -WindowStyle $style -PassThru
             if (-not $proc.WaitForExit(600000)) {   # 10 min per product
-                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                # Kill the whole tree (/T): the cmd wrapper AND the msiexec/setup
+                # child it launched. Killing only cmd would orphan the hung
+                # uninstaller, which would keep running while we force-delete.
+                Start-Process -FilePath 'taskkill.exe' -ArgumentList "/PID $($proc.Id) /T /F" `
+                              -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
                 Write-Bad "Timed out: $($p.DisplayName) (continuing with forced removal)"
             } elseif ($proc.ExitCode -in 0, 1605, 3010) {   # ok / already gone / ok-needs-reboot
                 if ($proc.ExitCode -eq 3010) { $script:RebootNeeded = $true }
@@ -255,14 +317,24 @@ foreach ($svc in $services) {
     Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
     sc.exe config "$($svc.Name)" start= disabled 2>&1 | Out-Null
     sc.exe delete "$($svc.Name)" 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Ok "Deleted service: $($svc.Name)"
-    } elseif ($LASTEXITCODE -eq 1072) {   # already marked for deletion
+    $deleteExit = $LASTEXITCODE
+    if ($deleteExit -eq 0) {
+        # sc.exe delete returns 0 even when it only *marks* a still-running
+        # service for deletion (the SCM entry survives until the service stops,
+        # i.e. at reboot for self-protected services). Re-query to confirm.
+        sc.exe query "$($svc.Name)" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 1060) {   # ERROR_SERVICE_DOES_NOT_EXIST -> really gone
+            Write-Ok "Deleted service: $($svc.Name)"
+        } else {
+            $script:RebootNeeded = $true
+            Write-Ok "Service marked for deletion at reboot: $($svc.Name)"
+        }
+    } elseif ($deleteExit -eq 1072) {   # already marked for deletion
         $script:RebootNeeded = $true
         Write-Ok "Service marked for deletion at reboot: $($svc.Name)"
     } else {
         $script:Resistant.Add("service: $($svc.Name)")
-        Write-Bad "Could not delete service $($svc.Name) (sc.exe exit code $LASTEXITCODE)"
+        Write-Bad "Could not delete service $($svc.Name) (sc.exe exit code $deleteExit)"
     }
 }
 

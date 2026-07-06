@@ -35,7 +35,11 @@ function Get-EdgeSetup {
         if (Test-Path $base) {
             $setup = Get-ChildItem -Path $base -Recurse -Filter 'setup.exe' -ErrorAction SilentlyContinue |
                      Where-Object { $_.FullName -match '\\Installer\\setup\.exe$' } |
-                     Sort-Object { $_.VersionInfo.ProductVersion } -Descending |
+                     Sort-Object -Property @{ Expression = {
+                         # Sort as a real version, not lexicographically ("10.0.9" > "10.0.10" as strings)
+                         $v = $null
+                         if ([version]::TryParse($_.VersionInfo.ProductVersion, [ref]$v)) { $v } else { [version]'0.0.0.0' }
+                     } } -Descending |
                      Select-Object -First 1
             if ($setup) { return $setup.FullName }
         }
@@ -71,14 +75,17 @@ if ($RemoveWebView2) {
     )
     $wv = Get-ItemProperty -Path $uninstallKeys -ErrorAction SilentlyContinue |
           Where-Object { $_.DisplayName -like '*WebView2*' -and $_.UninstallString }
+    # On Windows PowerShell 5.1 `foreach ($x in $null)` runs ONCE with $x = $null,
+    # so guard with if/else rather than looping over a possibly-null $wv.
     if (-not $wv) {
         Write-Host "WebView2 uninstall entry not found." -ForegroundColor Yellow
-    }
-    foreach ($w in $wv) {
-        $cmd = $w.UninstallString
-        if ($cmd -notmatch 'force-uninstall') { $cmd += ' --force-uninstall' }
-        Write-Host "  $($w.DisplayName)" -ForegroundColor Gray
-        Start-Process -FilePath 'cmd.exe' -ArgumentList "/d /s /c `"$cmd`"" -Wait -WindowStyle Hidden
+    } else {
+        foreach ($w in $wv) {
+            $cmd = $w.UninstallString
+            if ($cmd -notmatch 'force-uninstall') { $cmd += ' --force-uninstall' }
+            Write-Host "  $($w.DisplayName)" -ForegroundColor Gray
+            Start-Process -FilePath 'cmd.exe' -ArgumentList "/d /s /c `"$cmd`"" -Wait -WindowStyle Hidden
+        }
     }
 }
 

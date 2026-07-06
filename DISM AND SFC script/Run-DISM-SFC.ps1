@@ -33,14 +33,17 @@ function Run-Step {
     Write-Host $header -ForegroundColor Cyan
     Add-Content -Path $logFile -Value $header
 
-    # Run inheriting the console so DISM/SFC progress displays live and their
-    # native Unicode output is not mangled by pipe redirection.
-    & $FilePath @Arguments
+    # Pipe to Out-Host so DISM/SFC output goes straight to the console (live,
+    # correctly rendered) and does NOT flow into this function's output stream -
+    # otherwise `return $code` would be preceded by every stdout line and the
+    # caller's variable would be an object[], not the exit code.
+    & $FilePath @Arguments | Out-Host
     $code = $LASTEXITCODE
 
     $result = "Exit code: $code"
-    if ($code -eq 0) { Write-Host $result -ForegroundColor Green }
-    else             { Write-Host $result -ForegroundColor Yellow }
+    # 3010 = ERROR_SUCCESS_REBOOT_REQUIRED - a success, not a failure.
+    if ($code -eq 0 -or $code -eq 3010) { Write-Host $result -ForegroundColor Green }
+    else                                { Write-Host $result -ForegroundColor Yellow }
     Add-Content -Path $logFile -Value $result
     return $code
 }
@@ -54,7 +57,10 @@ Run-Step 'sfc.exe'  @('/scannow')                                    'SFC: Syste
 
 Write-Host "`nAll steps completed. Summary log: $logFile" -ForegroundColor Green
 Write-Host "Detailed logs: C:\Windows\Logs\DISM\dism.log  and  C:\Windows\Logs\CBS\CBS.log" -ForegroundColor Gray
-if ($restore -ne 0) {
-    Write-Host "DISM RestoreHealth did not report success (exit $restore). If it failed to find sources, retry with a mounted Windows ISO:" -ForegroundColor Yellow
+if ($restore -eq 3010) {
+    Write-Host "DISM RestoreHealth succeeded but a reboot is required to finalize the repair (exit 3010). Please restart Windows." -ForegroundColor Yellow
+}
+elseif ($restore -ne 0) {
+    Write-Host "DISM RestoreHealth did not report success (exit $restore). If it failed to find sources, retry with a mounted Windows ISO (adjust the file and index to match your media - use 'dism /Get-WimInfo' or '/Get-ImageInfo' to list them):" -ForegroundColor Yellow
     Write-Host "  dism /online /cleanup-image /restorehealth /source:ESD:X:\sources\install.esd:1 /limitaccess" -ForegroundColor Yellow
 }

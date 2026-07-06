@@ -19,15 +19,28 @@ param(
     [string]$OutputPath = "$env:USERPROFILE\Desktop\WiFi_Profiles.csv"
 )
 
-# pull the value after the first ':' on the first line that matches $label
+# netsh only reveals the cleartext key (key=clear) for all-user profiles when
+# run elevated. Warn rather than fail, since per-user profiles may still work.
+$isAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "Not running as Administrator - passwords for all-user profiles may come back blank. Re-run elevated for full results." -ForegroundColor Yellow
+}
+
+# Return the value of a "Label : value" field. Matches the label against the
+# KEY (text before the first colon), not the whole line, so an SSID whose name
+# happens to contain a field word (e.g. "Authentication") can't poison a field.
 function Get-NetshValue {
     param([string[]]$Text, [string]$Label)
-    $line = $Text | Select-String -SimpleMatch "$Label" | Select-Object -First 1
-    if (-not $line) { return '' }
-    $s = $line.ToString()
-    $idx = $s.IndexOf(':')
-    if ($idx -lt 0) { return '' }
-    return $s.Substring($idx + 1).Trim()
+    foreach ($line in $Text) {
+        $s = "$line"
+        $idx = $s.IndexOf(':')
+        if ($idx -lt 0) { continue }
+        $key = $s.Substring(0, $idx).Trim()
+        if ($key -like "*$Label*") { return $s.Substring($idx + 1).Trim() }
+    }
+    return ''
 }
 
 # Get all saved Wi-Fi profile names (split on first ':' to survive SSIDs with colons)

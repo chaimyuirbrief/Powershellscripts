@@ -13,7 +13,10 @@ function Get-BDEInfo {
         $v = Get-BitLockerVolume -MountPoint $DriveLetter -ErrorAction Stop
         [pscustomobject]@{
             Status            = $v.VolumeStatus
-            PercentEncrypted  = [int]$v.EncryptionPercentage
+            # keep the raw (fractional) value: rounding 0.4% down to 0 would make
+            # the "-le 0" completion check fire slightly early.
+            PercentEncrypted  = [double]$v.EncryptionPercentage
+            PercentKnown      = $true
             Method            = $v.EncryptionMethod
             Protection        = $v.ProtectionStatus
             LockStatus        = $v.LockStatus
@@ -22,12 +25,21 @@ function Get-BDEInfo {
         $out = & manage-bde -status $DriveLetter 2>$null
         $percentLine = $out | Where-Object { $_ -match 'Percentage Encrypted\s*:\s*(\d+(\.\d+)?)%' }
         $statusLine  = $out | Where-Object { $_ -match 'Conversion Status\s*:\s*(.+)$' }
-        $pct = if ($percentLine) { [int]([double]($percentLine -replace '.*:\s*','' -replace '%','')) } else { 0 }
+        if ($percentLine) {
+            $pct = [double]($percentLine -replace '.*:\s*','' -replace '%','')
+            $pctKnown = $true
+        } else {
+            # Could not read a percentage - do NOT treat this as 0% (that would
+            # look like "fully decrypted" and stop the monitor mid-job).
+            $pct = 0
+            $pctKnown = $false
+        }
         $stat = if ($statusLine) { ($statusLine -replace '.*:\s*','').Trim() } else { 'Unknown' }
 
         [pscustomobject]@{
             Status            = $stat
             PercentEncrypted  = $pct
+            PercentKnown      = $pctKnown
             Method            = ($out | Where-Object { $_ -match 'Encryption Method' }) -replace '.*:\s*',''
             Protection        = ($out | Where-Object { $_ -match 'Protection Status' }) -replace '.*:\s*',''
             LockStatus        = ($out | Where-Object { $_ -match 'Lock Status' }) -replace '.*:\s*',''
@@ -61,7 +73,7 @@ while ($true) {
             $eta = [TimeSpan]::FromHours($hrs)
             # {0:hh} caps at 23h and silently drops days, so build the string
             # from total hours to stay correct for jobs longer than a day.
-            $etaText = " | ~ETA: {0}h {1:mm}m {1:ss}s (≈{2:N1}%/hr)" -f `
+            $etaText = " | ~ETA: {0}h {1:mm}m {1:ss}s (~{2:N1}%/hr)" -f `
                 [math]::Floor($eta.TotalHours), $eta, $pctPerHour
         }
     } elseif ($deltaPct -eq 0) {
@@ -74,10 +86,11 @@ while ($true) {
 
     Write-Host ("[{0}] {1}" -f (Get-Date).ToString("HH:mm:ss"), $progressText + $etaText)
 
-    # Get-BitLockerVolume reports "FullyDecrypted"; manage-bde reports "Fully Decrypted"
-    if ($info.Status -match 'Fully\s*Decrypted' -or $info.PercentEncrypted -le 0) {
+    # Get-BitLockerVolume reports "FullyDecrypted"; manage-bde reports "Fully Decrypted".
+    # Only trust the numeric "<= 0" test when the percentage was actually parsed.
+    if ($info.Status -match 'Fully\s*Decrypted' -or ($info.PercentKnown -and $info.PercentEncrypted -le 0)) {
         Write-Progress -Activity "BitLocker decrypting $DriveLetter" -Completed
-        Write-Host "✅ $DriveLetter is fully decrypted." -ForegroundColor Green
+        Write-Host "[DONE] $DriveLetter is fully decrypted." -ForegroundColor Green
         break
     }
 
