@@ -17,29 +17,50 @@ Assert-Admin
 $logDir = 'C:\Logs'
 New-Item -ItemType Directory -Path $logDir -Force -ErrorAction SilentlyContinue | Out-Null
 $log = Join-Path $logDir 'Clean-Dell-PCDoctor.log'
-"=== $(Get-Date) Start Dell PC-Doctor cleanup ===" | Tee-Object -FilePath $log -Append
+
+# Write to console AND append to the log. Tee-Object gained -Append only in
+# PowerShell 6; on Windows PowerShell 5.1 `Tee-Object -Append` throws and
+# nothing is logged, so use this instead.
+function Write-Log {
+  param([Parameter(ValueFromPipeline = $true, Position = 0)][object]$Message)
+  process {
+    Write-Host $Message
+    Add-Content -Path $log -Value $Message
+  }
+}
+
+"=== $(Get-Date) Start Dell PC-Doctor cleanup ===" | Write-Log
 
 # 1) Kill known processes (best-effort)
 $procNames = @('SupportAssistAgent','pcdr','pcdrcui','pcdsrvc','pcdclr','AppUp.IntelUnifiedDCH','Dell.TechHub')
 foreach($p in $procNames){
   Get-Process -Name $p -ErrorAction SilentlyContinue | ForEach-Object {
-    "Killing process: $($_.Name)" | Tee-Object -FilePath $log -Append
+    "Killing process: $($_.Name)" | Write-Log
     Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
   }
 }
 
 # 2) Stop/delete services that look like SupportAssist / PC-Doctor
-$svcLike = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | Where-Object {
-  $_.Name -match '(?i)(supportassist|pc-?doctor|pcdr|pcdsrvc|techhub)'
-    -or $_.DisplayName -match '(?i)(supportassist|pc-?doctor|pcdr|techhub)'
-    -or $_.PathName -match '(?i)(supportassistagent|pcdr|pc-?doctor)'
+# NOTE: -or must sit at the END of each line. If it starts the next line,
+# PowerShell ends the statement after the first -match and tries to run "-or"
+# as a command, so the filter would only ever match on $_.Name.
+# Win32_Service lists only user-mode services; the HVCI-blocked kernel driver
+# (iqvw64e.sys / the PC-Doctor driver) is a SERVICE_KERNEL_DRIVER and shows up
+# only under Win32_SystemDriver. Query both. @( ) tolerates null/single results.
+$svcLike = @(
+  Get-CimInstance Win32_Service      -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_SystemDriver -ErrorAction SilentlyContinue
+) | Where-Object {
+  $_.Name -match '(?i)(supportassist|pc-?doctor|pcdr|pcdsrvc|techhub|iqvw64e)' -or
+  $_.DisplayName -match '(?i)(supportassist|pc-?doctor|pcdr|techhub)' -or
+  $_.PathName -match '(?i)(supportassistagent|pcdr|pc-?doctor|iqvw64e)'
 }
 
 if($svcLike){
-  "Services to remove:" | Tee-Object -FilePath $log -Append
-  ($svcLike | Select-Object Name, DisplayName, State, StartMode, PathName | Format-Table | Out-String) | Tee-Object -FilePath $log -Append
+  "Services to remove:" | Write-Log
+  ($svcLike | Select-Object Name, DisplayName, State, StartMode, PathName | Format-Table | Out-String) | Write-Log
   foreach($s in $svcLike){
-    "Stopping/deleting service: $($s.Name)" | Tee-Object -FilePath $log -Append
+    "Stopping/deleting service: $($s.Name)" | Write-Log
     sc.exe stop $s.Name 2>$null | Out-Null
     Start-Sleep -Milliseconds 400
     sc.exe delete $s.Name 2>$null | Out-Null
@@ -50,17 +71,22 @@ if($svcLike){
     }
   }
 } else {
-  "No matching services found." | Tee-Object -FilePath $log -Append
+  "No matching services found." | Write-Log
 }
 
-# 3) Remove scheduled tasks under common Dell/PCDr paths
+# 3) Remove scheduled tasks under common Dell/PCDr paths.
+# schtasks.exe /TN does NOT accept wildcards, so the old '\Dell\*' query matched
+# nothing. Get-ScheduledTask -TaskPath does support wildcards.
 $taskRoots = @('\Dell','\Dell\SupportAssistAgent','\PC-Doctor','\PCDr')
 foreach($root in $taskRoots){
   try{
-    $q = schtasks /Query /TN ($root + '\*') 2>&1
-    if($LASTEXITCODE -eq 0 -and $q){
-      "Deleting tasks under " + $root | Tee-Object -FilePath $log -Append
-      schtasks /Delete /TN ($root + '\*') /F 2>&1 | Tee-Object -FilePath $log -Append | Out-Null
+    $tasks = Get-ScheduledTask -TaskPath ($root + '\*') -ErrorAction SilentlyContinue
+    if($tasks){
+      "Deleting tasks under " + $root | Write-Log
+      foreach($t in $tasks){
+        ("  " + $t.TaskPath + $t.TaskName) | Write-Log
+        Unregister-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -Confirm:$false -ErrorAction SilentlyContinue
+      }
     }
   } catch {}
 }
@@ -77,20 +103,21 @@ $folders = @(
 
 foreach($f in $folders){
   if(Test-Path $f){
-    "Removing folder: $f" | Tee-Object -FilePath $log -Append
+    "Removing folder: $f" | Write-Log
     try{
       takeown /f "$f" /r /d y | Out-Null
-      icacls "$f" /grant Administrators:F /t /c | Out-Null
+      # *S-1-5-32-544 is the built-in Administrators SID - resolves on any locale
+      icacls "$f" /grant '*S-1-5-32-544:F' /t /c | Out-Null
       # remove any .pkms/.sys first (sometimes locked)
       Get-ChildItem -Path $f -Recurse -Force -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -match '(?i)\.(pkms|sys|dll|exe)$' } |
         ForEach-Object {
-          "  Deleting file: $($_.FullName)" | Tee-Object -FilePath $log -Append
+          "  Deleting file: $($_.FullName)" | Write-Log
           Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
         }
       Remove-Item -Path $f -Recurse -Force -ErrorAction SilentlyContinue
     } catch {
-      "  Failed to remove: $f  ->  $($_.Exception.Message)" | Tee-Object -FilePath $log -Append
+      "  Failed to remove: $f  ->  $($_.Exception.Message)" | Write-Log
     }
   }
 }
@@ -105,7 +132,7 @@ foreach($root in $uninstRoots){
     try{
       $dn = (Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue).DisplayName
       if($dn -and $dn -match '(?i)(PC-?Doctor|PCDr|SupportAssist)'){
-        "Uninstall entry remains: " + $dn | Tee-Object -FilePath $log -Append
+        "Uninstall entry remains: " + $dn | Write-Log
       }
     }catch{}
   }
@@ -114,6 +141,6 @@ foreach($root in $uninstRoots){
 # 6) Clear Code Integrity log
 wevtutil cl "Microsoft-Windows-CodeIntegrity/Operational" 2>$null
 
-"`nDone. Log: $log" | Tee-Object -FilePath $log -Append
+"`nDone. Log: $log" | Write-Log
 Write-Host ("Done. Log saved to: " + $log)
 Write-Warning "Reboot now. After reboot, rerun Code Integrity log check to confirm no new blocks."
