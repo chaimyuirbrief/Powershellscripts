@@ -6,19 +6,30 @@
 
 .DESCRIPTION
     Safety features:
-      - Refuses drive roots, protected system trees (Windows, ProgramData) and
-        the immediate children of Program Files / user-profile roots.
+      - Refuses drive roots and protected system trees (Windows, ProgramData).
+      - Refuses the immediate children of Program Files / user-profile roots
+        (e.g. a whole user profile) unless -Force is given.
       - Never follows a junction/symlink: a link target (or a link nested in the
         tree) is unlinked, never deleted through.
       - Grants Administrators (not Everyone) full control, so a file that can't
         be deleted is never left world-writable.
 
+.PARAMETER Force
+    Allow deleting an immediate child of C:\Users or Program Files - e.g. an
+    entire user-profile folder or an installed application's folder. Drive
+    roots, Windows, ProgramData and the roots themselves stay blocked.
+
 .EXAMPLE
     .\ForceDeleteStuckDirectory.ps1 -Path 'C:\Some\Stuck\Folder'
+
+.EXAMPLE
+    .\ForceDeleteStuckDirectory.ps1 -Path 'C:\Users\OldAccount' -Force
 #>
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Path
+    [string]$Path,
+
+    [switch]$Force
 )
 
 if (-not (Test-Path -LiteralPath $Path)) {
@@ -42,25 +53,41 @@ $hardRoots = @($env:windir, $env:ProgramData) |
     Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') }
 
 # Protected root + its immediate children only; deeper stuck folders are allowed
-# so the tool stays useful (C:\Users\Bob\proj\locked is fine; C:\Users\Bob is not).
+# so the tool stays useful (C:\Users\Bob\proj\locked is fine; C:\Users\Bob needs
+# -Force; C:\Users itself is always blocked).
+$usersRoot = (Join-Path $env:SystemDrive 'Users').TrimEnd('\')
 $shallowRoots = @(
-    (Join-Path $env:SystemDrive 'Users'), $env:ProgramFiles, ${env:ProgramFiles(x86)}
+    $usersRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}
 ) | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') }
 
 $blocked = $false
+$needsForce = $false
 if (($full -split '\\').Count -lt 3) { $blocked = $true }   # drive root / 2-segment path
 foreach ($r in $hardRoots) { if (Test-AtOrUnder $full $r) { $blocked = $true; break } }
 if (-not $blocked) {
     foreach ($r in $shallowRoots) {
         if (Test-AtOrUnder $full $r) {
             $rel = $full.Substring($r.Length).Trim('\')
-            if ($rel -eq '' -or ($rel -split '\\').Count -le 1) { $blocked = $true }
+            if ($rel -eq '') { $blocked = $true }                      # the root itself: always refused
+            elseif (($rel -split '\\').Count -le 1 -and -not $Force) { # immediate child: -Force required
+                $blocked = $true; $needsForce = $true
+            }
             break
         }
     }
 }
 if ($blocked) {
-    Write-Host "Refusing to delete protected path: $full" -ForegroundColor Red
+    if ($needsForce) {
+        Write-Host "Refusing to delete $full - it is a top-level folder (a whole user profile or installed app)." -ForegroundColor Red
+        Write-Host "If you really mean to delete the entire folder, re-run with -Force:" -ForegroundColor Yellow
+        Write-Host "    .\ForceDeleteStuckDirectory.ps1 -Path '$full' -Force" -ForegroundColor Yellow
+        if (Test-AtOrUnder $full $usersRoot) {
+            Write-Host "Tip: deleting a profile folder leaves its registry entry behind. To remove a" -ForegroundColor DarkYellow
+            Write-Host "profile cleanly, prefer: Get-CimInstance Win32_UserProfile | Where-Object LocalPath -eq '$full' | Remove-CimInstance" -ForegroundColor DarkYellow
+        }
+    } else {
+        Write-Host "Refusing to delete protected path: $full" -ForegroundColor Red
+    }
     return
 }
 
