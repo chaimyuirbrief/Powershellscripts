@@ -22,7 +22,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 | Script | Purpose | Elevation | Notes |
 |--------|---------|-----------|-------|
 | `getridofmcafee.ps1` | Fully removes McAfee: runs official uninstallers, then force-removes leftover processes, services, drivers, tasks, AppX packages, folders and registry keys. | Admin | Supports `-Force` (unattended), `-DeepScan` (whole-drive sweep), `-SkipUninstallers`. Writes a transcript to `%TEMP%`. |
-| `UninstallEdge.ps1` | Uninstalls Microsoft Edge via its own `setup.exe`. Does **not** delete shared folders or WebView2 by default. | Admin | `-RemoveWebView2` to also remove the WebView2 runtime. Consumer Windows often blocks Edge removal. |
+| `UninstallEdge.ps1` | Fully uninstalls the Microsoft Edge browser using its own `setup.exe`, temporarily flipping the EEA region policy so removal is allowed even on consumer Windows (then restoring it). Keeps WebView2 and never touches Windows Search / Start menu / Widgets, then blocks Edge from silently reinstalling. | Admin | `-RemoveWebView2` also removes the WebView2 runtime + Edge Update (can break Search/Start/Widgets — off by default). |
 | `Fix_iqvw64e.sys_error/` | Removes Dell SupportAssist / PC-Doctor leftovers that trigger HVCI / Code Integrity blocks (e.g. the `iqvw64e.sys` popup). | Admin | Logs to `C:\Logs`. Reboot afterwards. |
 | `RemoveAdobeCredentials/Remove-Adobe-Creds.ps1` | Deletes only Credential Manager entries whose target contains "adobe". | User | `-WhatIf` previews. Writes before/after inventories. |
 | `DISM AND SFC script/Run-DISM-SFC.ps1` | Runs DISM ScanHealth → CheckHealth → RestoreHealth, then SFC /scannow, with a summary log. | Admin | Detailed logs stay in `C:\Windows\Logs\DISM` and `\CBS`. |
