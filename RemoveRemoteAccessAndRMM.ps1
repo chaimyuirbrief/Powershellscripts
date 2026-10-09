@@ -12,9 +12,9 @@
     suspect a remote attacker (or an unwanted "tech support" remote session) has
     touched. It works in seven stages:
 
-      1. INVENTORY     - scans installed programs, services, drivers, running
-                         processes, scheduled tasks, autoruns and common install
-                         folders against a built-in catalogue of ~70 popular RMM
+      1. INVENTORY     - scans installed programs, services, running processes,
+                         scheduled tasks and common install folders against a
+                         built-in catalogue of ~70 popular RMM
                          and remote-access products (ConnectWise/ScreenConnect,
                          AnyDesk, TeamViewer, Atera, Splashtop, NinjaOne, Kaseya,
                          Datto, AnyDesk, RustDesk, ngrok/Cloudflare tunnels, VNC,
