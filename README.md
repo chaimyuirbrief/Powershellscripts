@@ -21,6 +21,7 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 
 | Script | Purpose | Elevation | Notes |
 |--------|---------|-----------|-------|
+| `RemoveRemoteAccessAndRMM.ps1` | Incident-response sweep: finds/uninstalls/wipes ~70 catalogued RMM & remote-access tools (ConnectWise, AnyDesk, TeamViewer, Atera, Splashtop, RustDesk, ngrok/Cloudflare tunnels, VNC, …), hunts for a custom/unknown backdoor by heuristics, traces inbound network exposure (listeners, live sessions, RDP/WinRM/SSH, firewall, local admins), then combs the whole drive for leftovers of what it found. Opens a report in Notepad and prompts to send it to IT. | Admin | `-ScanOnly` (audit, no changes — run this first), `-Force` (unattended), `-RemoveSuspicious` (act on heuristic hits), `-LogDir`. Catalogue based on [LOLRMM](https://lolrmm.io). |
 | `getridofmcafee.ps1` | Fully removes McAfee: runs official uninstallers, then force-removes leftover processes, services, drivers, tasks, AppX packages, folders and registry keys. | Admin | Supports `-Force` (unattended), `-DeepScan` (whole-drive sweep), `-SkipUninstallers`. Writes a transcript to `%TEMP%`. |
 | `UninstallEdge.ps1` | Uninstalls Microsoft Edge via its own `setup.exe`. Does **not** delete shared folders or WebView2 by default. | Admin | `-RemoveWebView2` to also remove the WebView2 runtime. Consumer Windows often blocks Edge removal. |
 | `Fix_iqvw64e.sys_error/` | Removes Dell SupportAssist / PC-Doctor leftovers that trigger HVCI / Code Integrity blocks (e.g. the `iqvw64e.sys` popup). | Admin | Logs to `C:\Logs`. Reboot afterwards. |
