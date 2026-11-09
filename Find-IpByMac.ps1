@@ -16,8 +16,11 @@
     The /24 to sweep, e.g. "192.168.1". "192.168.1.0", "192.168.1.x" and
     "192.168.1.0/24" are accepted too; other prefix lengths are refused.
 
-.PARAMETER StartHost / EndHost
-    Last-octet range to scan (default 1-254).
+.PARAMETER StartHost
+    First last-octet to sweep (default 1).
+
+.PARAMETER EndHost
+    Last last-octet to sweep (default 254).
 
 .PARAMETER TargetMac
     MAC to look for. Any format accepted: 00-11-22-33-44-55, 00:11:22:33:44:55,
@@ -77,11 +80,18 @@ function Find-IpByMac {
     param([string]$NormalizedTarget)
 
     # Prefer Get-NetNeighbor (Win8 / Server 2012+) -- cleaner than parsing arp -a.
+    # Only Reachable (confirmed within the last ~30s -- a host that just answered
+    # the sweep's ARP is Reachable) and Permanent (static) entries count. Stale,
+    # Delay and Probe are unconfirmed: if this PC last talked to the device at
+    # an older address, that entry survives here and would be reported as FOUND
+    # on the first sweep, before the device is even plugged in. A device whose
+    # entry had gone Stale is confirmed by Windows within seconds and shows up
+    # on the next sweep instead.
     if (Get-Command Get-NetNeighbor -ErrorAction SilentlyContinue) {
         $neighbors = Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue |
             Where-Object {
                 $_.LinkLayerAddress -and
-                $_.State -notin @('Unreachable','Incomplete') -and
+                $_.State -in @('Reachable','Permanent') -and
                 (Convert-Mac $_.LinkLayerAddress) -eq $NormalizedTarget
             }
         if ($neighbors) { return @($neighbors.IPAddress) }
